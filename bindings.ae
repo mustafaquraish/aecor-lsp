@@ -1,0 +1,37 @@
+@compiler c_include "sys/socket.h"
+@compiler c_include "netinet/in.h"
+@compiler c_include "arpa/inet.h"
+@compiler c_include "stdio.h"
+@compiler c_include "stdlib.h"
+@compiler c_include "unistd.h"
+@compiler c_include "errno.h"
+@compiler c_include "string.h"
+@compiler c_include "sys/types.h"
+@compiler c_include "time.h"
+
+struct SockAddr extern("struct sockaddr")
+struct SinAddr extern("<lmao what is this?>") {
+    s_addr: i32
+}
+struct SockAddrIn extern("struct sockaddr_in") {
+    sin_family: i32
+    sin_port: i32
+    sin_addr: SinAddr
+}
+
+def htons(val: i32): i32 extern
+def htonl(val: i32): i32 extern
+
+let AF_INET: i32 extern
+let SOCK_STREAM: i32 extern
+let INADDR_ANY: i32 extern
+
+def memset(ptr: untyped_ptr, value: i32, size: i32): untyped_ptr extern
+def socket(domain: i32, type: i32, protocol: i32): i32 extern
+def bind(sockfd: i32, addr: &SockAddr, addrlen: i32): i32 extern
+def listen(sockfd: i32, backlog: i32): i32 extern
+def accept(sockfd: i32, addr: &SockAddr, addrlen: &i32): i32 extern
+
+def read(fd: i32, buf: untyped_ptr, count: i32): i32 extern
+def write(fd: i32, buf: untyped_ptr, count: i32): i32 extern
+def close(fd: i32): i32 extern

@@ -1,0 +1,197 @@
+/// out: "234"
+
+use "lib/json.ae"
+use "lib/stringbuilder.ae"
+use "@/bindings.ae"
+
+struct LSPServer {
+    client: i32 // file descriptor
+    file_content: string
+    file_path: string
+}
+
+def LSPServer::make(client: i32): LSPServer {
+    let server: LSPServer
+    server.client = client
+    return server
+}
+
+def LSPServer::read_message(&this): &JSON {
+    let buf = calloc(8192, 1) as string
+    let count = read(.client, buf, 8192)
+    if count <= 0 return null
+    buf[count] = '\0'
+
+    let cur = buf
+    // Read the header...
+    while true {
+        let line = strsep(&cur, "\n")
+        let len = line.len()
+        if len < 2 {
+            break
+        }
+        // Pesky carriage returns
+        line[len-1] = '\0'
+        println("Header line: %s", line)
+    }
+
+    let json_text = strsep(&cur, "\n")
+    println("JSON text: %s", json_text)
+    println("")
+
+    // Let's parse the JSON!
+    let json = JSON::parse_from_string(json_text)
+
+    // Clean up memory
+    free(buf)
+    return json
+}
+
+def LSPServer::send_message(&this, json: &JSON) {
+    let json_text = json.str()
+    let json_len = json_text.len()
+
+    let resp = StringBuilder::make()
+    resp.puts("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+    resp.putsf(`Content-Length: {json_len}\r\n`)
+    resp.puts("\r\n")
+    resp.puts(json_text)
+    write(.client, resp.data, resp.size)
+
+    // Clean up the data as well as the JSON object
+    free(resp.data)
+    json.free()
+}
+
+def LSPServer::create_base(&this, request: &JSON, inner: &JSON): &JSON {
+    let base = JSON::new(JSONType::Object)
+    base.insert("jsonrpc", JSON::new_str("2.0"))
+    base.insert("id", request.get("id"))
+    base.insert("result", inner)
+    return base
+}
+
+def LSPServer::create_base_err(&this, request: &JSON, err: &JSON): &JSON {
+    let base = JSON::new(JSONType::Object)
+    base.insert("jsonrpc", JSON::new_str("2.0"))
+    base.insert("id", request.get("id"))
+    base.insert("error", err)
+    return base
+}
+
+def LSPServer::handle_initialize(&this, request: &JSON): bool {
+    println("[LSP] Got initialize request")
+
+    let server_info = JSON::new(JSONType::Object)
+    server_info.insert("name", JSON::new_str("ae-lsp-server"))
+    server_info.insert("version", JSON::new_str("0.1"))
+
+    let response = JSON::new(JSONType::Object)
+    response.insert("serverInfo", server_info)
+    response.insert("capabilities", JSON::new(JSONType::Object))
+
+    .send_message(.create_base(request, response))
+    return true
+}
+
+def LSPServer::handle_initialized(&this, request: &JSON): bool {
+    println("[LSP] Got initialized confirmation")
+    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    return true
+}
+
+def LSPServer::handle_did_open_text(&this, request: &JSON): bool {
+    println("[LSP] Got did open text document request")
+
+    let document = request.get("params").get("textDocument")
+    .file_path = document.get("uri").as_str().copy()
+    .file_content = document.get("text").as_str().copy()
+
+    println("[LSP] Opened file %s", .file_path)
+
+    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    return true
+}
+
+def LSPServer::handle_completion(&this, request: &JSON): bool {
+    println("[LSP] Got completion request")
+    let position = request.get("params").get("position")
+    let line = position.get("line").as_num()
+    let character = position.get("character").as_num()
+    println("[LSP] Completion at line %d, character %d", line, character)
+
+    let item = JSON::new(JSONType::Object)
+    item.insert("label", JSON::new_str("foo"))
+    item.insert("detail", JSON::new_str("A variable named foo, lmao"))
+
+    let completions = JSON::new(JSONType::Array)
+    completions.push(item)
+
+    let completion_list = JSON::new(JSONType::Object)
+    completion_list.insert("isIncomplete", JSON::new_bool(false))
+    completion_list.insert("items", completions)
+
+    .send_message(.create_base(request, completion_list))
+    return true;
+}
+
+def LSPServer::handle_shutdown(&this, request: &JSON): bool {
+    println("[LSP] Got shutdown request")
+    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    return true
+}
+
+def LSPServer::handle_exit(&this, request: &JSON): bool {
+    println("[LSP] Got exit request")
+    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    return true
+}
+
+def LSPServer::handle(&this) {
+    let running = true
+    while running {
+        let request = .read_message()
+        if not request? {
+            println("[LSP] Error reading message / connection closed")
+            break
+        }
+
+        let method = request.get("method").as_str()
+
+        running = match method {
+            "initialize" => .handle_initialize(request)
+            "initialized" => .handle_initialized(request)
+            "textDocument/didOpen" => .handle_did_open_text(request)
+            "textDocument/completion" => .handle_completion(request)
+            "shutdown" => .handle_shutdown(request)
+            "exit" => .handle_exit(request)
+            else => {
+                println("Unknown method: '%s', exiting", method)
+                yield false
+            }
+        }
+        free(request)
+        println("----------------------------------------------------\n")
+    }
+    println("[LSP] Exiting")
+}
+
+def main() {
+    let listenfd = socket(AF_INET, SOCK_STREAM, 0)
+
+    let serv_addr: SockAddrIn
+    memset(&serv_addr, 0, sizeof(SockAddrIn))
+    serv_addr.sin_family = AF_INET
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY)
+    serv_addr.sin_port = htons(3333)
+
+    bind(listenfd, (&serv_addr) as &SockAddr, sizeof(SockAddrIn))
+    listen(listenfd, 10)
+
+    let connfd = accept(listenfd, null, null);
+
+    let server = LSPServer::make(connfd)
+    server.handle()
+
+    close(connfd)
+}
