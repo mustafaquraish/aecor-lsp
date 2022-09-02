@@ -19,14 +19,14 @@ func main() {
 	}
 	defer lsc.Close()
 
-	doc, err := lsc.OpenDoc("test.go", "Go")
+	doc, err := lsc.OpenDoc("../main.ae", "aecor")
 	if err != nil {
         log.Fatal(err)
 	}
 
 	result, err := lsc.GetCompletions(doc, p.Position{
-		Line:      5,
-		Character: 5,
+		Line:      244,
+		Character: 25,
 	})
 	if err != nil {
         log.Fatal(err)
