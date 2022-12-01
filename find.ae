@@ -1,3 +1,4 @@
+use "lib/stringbuilder.ae"
 use "compiler/lexer.ae"
 use "compiler/parser.ae"
 use "compiler/typecheck.ae"
@@ -7,13 +8,6 @@ enum UsageType {
     Variable
     Type
     Function
-}
-
-def UsageType::str(this): string => match this {
-    Literal => "literal"
-    Variable => "variable"
-    Type => "type"
-    Function => "function"
 }
 
 union UsageUnion {
@@ -126,6 +120,11 @@ def Finder::find_in_expression(&this, node: &AST): bool {
         Member => {
             if .find_in_expression(node.u.member.lhs) return true
             if .find_in_identifier(node.u.member.rhs) return true
+            // This is usually for autocompletion:
+            let rhs = node.u.member.rhs
+            if rhs.type == Error {
+                println("Error span is: %s", rhs.span.str())
+            }
         }
         ScopeLookup => {
             // We actually want to point to the type, not the variable
@@ -188,7 +187,7 @@ def Finder::find_in_expression(&this, node: &AST): bool {
         }
         Break | Continue => {}
         else => {
-            println("Unhandled node type in Finder::find_in_expression: %s", node.type.str())
+            println("Unhandled node type in Finder::find_in_expression: %s", node.type)
         }
     }
     return false
@@ -277,35 +276,145 @@ def Finder::find(&this, program: &Program): &Usage {
     return null
 }
 
-def string::to_i32(this): i32 extern("atoi")
-
-def main(argc: i32, argv: &string) {
-    if argc < 4 {
-        panic(`Usage: {argv[0]} <file> <line> <col>`)
+def Type::editor_display(&this): string => match .base {
+    Char | Bool | Void | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | F32 | F64 => .base.str()
+    Pointer => match .ptr.base {
+        Void => "untyped_ptr"
+        Char => "string"
+        else => `&{.ptr.editor_display()}`
     }
-    let filename = argv[1]
+    Array => `&{.ptr.editor_display()}`
+    Structure => .name
+    Function | Method => {
+        let sb = StringBuilder::make()
+        let is_non_static_method = false
+        if .func_def? {
+            if .func_def.is_method {
+                sb.puts(.func_def.method_struct_name)
+                sb.puts("::")
+                is_non_static_method = not .func_def.is_static
+            }
+            sb.puts(.func_def.name)
+        } else {
+            sb.puts("fn")
+        }
+        sb.puts("(")
+        for let i = 0; i < .params.size; i += 1 {
+            let param = .params.at(i) as &Variable
+            if i > 0 {
+                sb.puts(", ")
+            }
 
+            if i == 0 and is_non_static_method {
+                if not param.type.name? {
+                    sb.puts("&")
+                }
+                sb.puts("this")
+            } else {
+                if not param.name.eq("") {
+                    sb.puts(param.name)
+                    sb.puts(": ")
+                }
+                sb.puts(param.type.editor_display())
+            }
+        }
+        sb.puts(")")
+        if .return_type.base != BaseType::Void {
+            sb.puts(": ")
+            sb.puts(.return_type.editor_display())
+        }
+        yield sb.str()
+    }
+    Error => "ERROR"
+}
+
+enum CommandType {
+    TypeHint
+    FindDefinition
+    Completion
+}
+
+def output_result(type: CommandType, usage: &Usage) {
+    if not usage? {
+        println("No result found")
+        return
+    }
+    if usage? {
+        println("Found usage:")
+        println("  - type: %s", usage.etype().editor_display())
+        println("  - loc: %s", usage.span().start.str())
+    }
+
+    match type {
+        TypeHint => {
+            let type = usage.etype()
+            println("Type hint: %s", type.editor_display())
+        }
+        FindDefinition => {
+            let loc = usage.span().start
+            println("Definition: %s:", loc.str())
+        }
+        Completion => {
+            let type = usage.etype()
+            match type.base {
+                Structure => {
+                    let struc = type.struct_def
+                    for let i = 0; i < struc.fields.size; i += 1 {
+                        let field = struc.fields.at(i) as &Variable
+                        println("  - %s: %s", field.name, field.type.editor_display())
+                    }
+                }
+                else => println("No completion available for type %s", type.editor_display())
+            }
+        }
+    }
+}
+
+def handle_command(type: CommandType, filename: string, row: i32, col: i32) {
     let parser = Parser::new(filename)
 
     let program = Program::new()
     parser.include_prelude(program)
-    parser.include_file(program, filename)
-
+    filename = parser.include_file(program, filename)
 
     let checker = TypeChecker::new()
     checker.check_program(program)
 
+    if program.errors.size > 0 {
+        println("Compilation failed:")
+        for let i = 0; i < program.errors.size; i += 1 {
+            let err = program.errors.at(i) as &Error
+            if err.span1.start.filename.eq(filename) {
+                let start = err.span1.start
+                let end = err.span1.end
+                println("ERROR: %d:%d - %d:%d :: %s", start.line, start.col, end.line, end.col, err.msg1)
+            }
+        }
+    }
+
     println("type checked program successfully")
 
-    let loc = Location(filename, argv[2].to_i32(), argv[3].to_i32())
+    let loc = Location(filename, row, col)
     let finder = Finder::make(loc)
 
     let usage = finder.find(program)
-    if usage? {
-        println("Found usage:")
-        println("  - type: %s", usage.etype().str())
-        println("  - loc: %s", usage.span().start.str())
-    } else {
-        println("didn't find it")
+    output_result(type, usage)
+}
+
+def main(argc: i32, argv: &string) {
+    let cmd_type = CommandType::TypeHint
+    if argc < 4 {
+        panic(`Usage: {argv[0]} <file> <line> <col>`)
     }
+    
+    for let i = 4; i < argc; i += 1 {
+        match argv[i] {
+            "-t" => cmd_type = CommandType::TypeHint
+            "-d" => cmd_type = CommandType::FindDefinition
+            "-c" => cmd_type = CommandType::Completion
+            else => panic("unknown command")
+        }
+    }
+    let filename = argv[1]
+    handle_command(cmd_type, filename, argv[2].to_i32(), argv[3].to_i32())
 }

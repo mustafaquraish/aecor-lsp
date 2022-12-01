@@ -96,7 +96,10 @@ class Server:
             typ = re.search("- type: (.*)\\n", out).group(1)
             typ = typ.replace("<", "[").replace(">", "]")
             self.send_message(request, {
-                "contents": f'Type: {typ}'
+                "contents": {
+                    "value": typ,
+                    "language": "aecor"
+                }
             })
 
         else:
