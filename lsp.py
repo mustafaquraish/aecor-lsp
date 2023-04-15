@@ -105,7 +105,7 @@ class Server:
         else:
             self.send_message(request, None)
         return True
-    
+
     def handle_definition(self, request):
         print("[+] LSP Definition")
         file = request["params"]["textDocument"]["uri"]
@@ -115,7 +115,7 @@ class Server:
 
         # txt = json.dumps(request["params"]["position"])
         # self.send_message(request, {
-        #     "contents": txt 
+        #     "contents": txt
         # })
         # return True
 
@@ -223,6 +223,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((HOST, PORT))
     s.listen()
+    print("started socket")
     conn, addr = s.accept()
     with conn:
         print(f"Connected by {addr}")

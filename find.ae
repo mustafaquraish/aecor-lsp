@@ -1,4 +1,9 @@
-use "lib/stringbuilder.ae"
+//
+// This is meant to be run for every single LSP request, it takes in a location in a file
+// and returns the requested information (type/definition/etc)
+//
+
+use "lib/buffer.ae"
 use "compiler/lexer.ae"
 use "compiler/parser.ae"
 use "compiler/typecheck.ae"
@@ -286,7 +291,7 @@ def Type::editor_display(&this): string => match .base {
     Array => `&{.ptr.editor_display()}`
     Structure => .name
     Function | Method => {
-        let sb = StringBuilder::make()
+        let sb = Buffer::make()
         let is_non_static_method = false
         if .func_def? {
             if .func_def.is_method {
@@ -406,7 +411,7 @@ def main(argc: i32, argv: &string) {
     if argc < 4 {
         panic(`Usage: {argv[0]} <file> <line> <col>`)
     }
-    
+
     for let i = 4; i < argc; i += 1 {
         match argv[i] {
             "-t" => cmd_type = CommandType::TypeHint

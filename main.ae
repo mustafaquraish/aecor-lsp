@@ -1,5 +1,15 @@
+//
+//         This is a simple server that handles LSP requests.
+// Don't actually use this: we don't return any proper responses for now since
+// we don't have a mechanism to properly free all the memory used by the internal
+// compiler, and so this would leak memory like crazy if we kept it running.
+//
+// Instead, use the `lsp.py` script for the VSCode client, and `find.ae` for the actual
+// aecor backend that handles each request and outputs the info to the terminal.
+//
+
 use "lib/json.ae"
-use "lib/stringbuilder.ae"
+use "lib/buffer.ae"
 use "@/bindings.ae"
 
 struct LSPServer {
@@ -16,7 +26,7 @@ def LSPServer::make(client: i32): LSPServer {
 
 const DEBUG = false
 
-def LSPServer::read_message(&this): &JSON {
+def LSPServer::read_message(&this): &Value {
     let buf = calloc(8192, 1) as string
 
     let count = read(.client, buf, 1024)
@@ -78,51 +88,51 @@ def LSPServer::read_message(&this): &JSON {
     return json
 }
 
-def LSPServer::send_message(&this, json: &JSON) {
-    let json_text = json.str()
-    let json_len = json_text.len()
+def LSPServer::send_message(&this, json: &Value) {
+    let json_text = JSON::serialize(json)
+    let json_len = json_text.size
 
-    let resp = StringBuilder::make()
+    let resp = Buffer::make()
     resp.puts("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
     resp.putsf(`Content-Length: {json_len}\r\n`)
     resp.puts("\r\n")
-    resp.puts(json_text)
+    resp.putb(&json_text)
     write(.client, resp.data, resp.size)
 
     if DEBUG println("Responded with:\n'''%s\n'''", resp.data)
 
-    // Clean up the data as well as the JSON object
+    // Clean up the data as well as the JSON Dictionary
     free(resp.data)
     json.free()
 }
 
-def LSPServer::create_base(&this, request: &JSON, inner: &JSON): &JSON {
-    let base = JSON::new(JSONType::Object)
-    base.insert("jsonrpc", JSON::new_str("2.0"))
+def LSPServer::create_base(&this, request: &Value, inner: &Value): &Value {
+    let base = Value::new(Dictionary)
+    base.insert("jsonrpc", Value::new_str("2.0"))
     base.insert("id", request.get("id"))
     base.insert("result", inner)
     return base
 }
 
-def LSPServer::create_base_err(&this, request: &JSON, err: &JSON): &JSON {
-    let base = JSON::new(JSONType::Object)
-    base.insert("jsonrpc", JSON::new_str("2.0"))
+def LSPServer::create_base_err(&this, request: &Value, err: &Value): &Value {
+    let base = Value::new(Dictionary)
+    base.insert("jsonrpc", Value::new_str("2.0"))
     base.insert("id", request.get("id"))
     base.insert("error", err)
     return base
 }
 
-def LSPServer::handle_initialize(&this, request: &JSON): bool {
+def LSPServer::handle_initialize(&this, request: &Value): bool {
     println("[LSP] Got initialize request")
 
-    let server_info = JSON::new(JSONType::Object)
-    server_info.insert("name", JSON::new_str("ae-lsp-server"))
-    server_info.insert("version", JSON::new_str("0.1"))
+    let server_info = Value::new(Dictionary)
+    server_info.insert("name", Value::new_str("ae-lsp-server"))
+    server_info.insert("version", Value::new_str("0.1"))
 
-    let capabilities = JSON::new(JSONType::Object)
-    capabilities.insert("hoverProvider", JSON::new_bool(true))
+    let capabilities = Value::new(Dictionary)
+    capabilities.insert("hoverProvider", Value::new_bool(true))
 
-    let response = JSON::new(JSONType::Object)
+    let response = Value::new(Dictionary)
     response.insert("serverInfo", server_info)
     response.insert("capabilities", capabilities)
 
@@ -130,78 +140,77 @@ def LSPServer::handle_initialize(&this, request: &JSON): bool {
     return true
 }
 
-def LSPServer::handle_initialized(&this, request: &JSON): bool {
+def LSPServer::handle_initialized(&this, request: &Value): bool {
     println("[LSP] Got initialized confirmation")
-    // .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    // .send_message(.create_base(request, Value::new(Null)))
     return true
 }
 
-def LSPServer::handle_hover(&this, request: &JSON): bool {
+def LSPServer::handle_hover(&this, request: &Value): bool {
     println("[LSP] Got hover request")
     let file = request.get("params").get("textDocument").get("uri").as_str()
     let position = request.get("params").get("position")
     let line = position.get("line").as_num()
     let character = position.get("character").as_num()
 
-    println("[LSP-INFO] Hover request for %s:%d:%d", file, line, character)
+    println(`[LSP-INFO] Hover request for {file}:{line}:{character}`)
 
     let str = `Line {line}, char {character}`
-    let contents = JSON::new_str(str)
+    let contents = Value::new_str(str)
 
-    let response = JSON::new(JSONType::Object)
+    let response = Value::new(Dictionary)
     response.insert("contents", contents)
     .send_message(.create_base(request, response))
 
     free(str)
-
     return true
 }
 
 
-def LSPServer::handle_did_open_text(&this, request: &JSON): bool {
+def LSPServer::handle_did_open_text(&this, request: &Value): bool {
     println("[LSP] Got did open text document request")
 
     let document = request.get("params").get("textDocument")
     .file_path = document.get("uri").as_str().copy()
     .file_content = document.get("text").as_str().copy()
 
-    println("[LSP] Opened file %s", .file_path)
+    println(`[LSP] Opened file {.file_path}`)
 
-    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    .send_message(.create_base(request, Value::new(Null)))
     return true
 }
 
-def LSPServer::handle_completion(&this, request: &JSON): bool {
+def LSPServer::handle_completion(&this, request: &Value): bool {
     println("[LSP] Got completion request")
     let position = request.get("params").get("position")
     let line = position.get("line").as_num()
     let character = position.get("character").as_num()
-    println("[LSP] Completion at line %d, character %d", line, character)
+    println(`[LSP] Completion at line {line}, character {character}`)
 
-    let item = JSON::new(JSONType::Object)
-    item.insert("label", JSON::new_str("foo"))
-    item.insert("detail", JSON::new_str("A variable named foo, lmao"))
+    let item = Value::new(Dictionary)
+    item.insert("label", Value::new_str("foo"))
+    item.insert("detail", Value::new_str("A variable named foo, lmao"))
 
-    let completions = JSON::new(JSONType::Array)
+    let completions = Value::new(List)
     completions.push(item)
 
-    let completion_list = JSON::new(JSONType::Object)
-    completion_list.insert("isIncomplete", JSON::new_bool(false))
+    let completion_list = Value::new(Dictionary)
+    completion_list.insert("isIncomplete", Value::new_bool(false))
     completion_list.insert("items", completions)
 
     .send_message(.create_base(request, completion_list))
     return true;
 }
 
-def LSPServer::handle_shutdown(&this, request: &JSON): bool {
+def LSPServer::handle_shutdown(&this, request: &Value): bool {
     println("[LSP] Got shutdown request")
-    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    .send_message(.create_base(request, Value::new(Null)))
     return true
 }
 
-def LSPServer::handle_exit(&this, request: &JSON): bool {
+def LSPServer::handle_exit(&this, request: &Value): bool {
     println("[LSP] Got exit request")
-    .send_message(.create_base(request, JSON::new(JSONType::Null)))
+    .send_message(.create_base(request, Value::new(Null)))
     return true
 }
 
